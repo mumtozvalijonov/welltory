@@ -1,9 +1,14 @@
 from fastapi import FastAPI, Query, Response, status, Body, Request
+
 from motor.motor_asyncio import AsyncIOMotorClient
-import asyncio
 from pymongo import UpdateOne, ASCENDING
-from datetime import datetime, time
+
+import asyncio
+from functools import partial
+from concurrent.futures import ThreadPoolExecutor
+
 import pandas as pd
+from datetime import datetime, time
 from scipy.stats import pearsonr
 
 from serializers import CalculationPayload
@@ -16,6 +21,7 @@ app = FastAPI()
 @app.on_event('startup')
 async def on_startup():
     app.mongo_client = AsyncIOMotorClient(config.MONGODB_URI)
+    app.executor = ThreadPoolExecutor(max_workers=5)
 
 @app.on_event('shutdown')
 async def on_shutdown():
@@ -53,7 +59,14 @@ async def save_metrics(mongo_client, payload: CalculationPayload):
     await collection.bulk_write(operations)
 
 
-async def calculate_correlation(mongo_client, payload: CalculationPayload):
+def get_correlation_from_data(data):
+    df = pd.DataFrame(data).set_index('_id')
+    df = df.resample('1d').mean()
+    df = df.fillna(df.mean())
+    return pearsonr(x=df.x, y=df.y)
+
+
+async def calculate_correlation(mongo_client, payload: CalculationPayload, executor: ThreadPoolExecutor):
     user_id = payload.user_id
     x_data_type, y_data_type = payload.data.x_data_type, payload.data.y_data_type
     result = mongo_client.get_default_database()[config.MONGODB_METRICS_COLLECTION]\
@@ -66,9 +79,8 @@ async def calculate_correlation(mongo_client, payload: CalculationPayload):
             {'$group': {'_id': '$date', 'x': {'$max': '$x'}, 'y': {'$max': '$y'}}},
             {'$sort': {'_id': ASCENDING}}
         ])
-    df = pd.DataFrame(await result.to_list(None))
-    df = df.fillna(df.mean())
-    corr, p_value = pearsonr(x=df.x, y=df.y)
+    data = await result.to_list(None)
+    corr, p_value = await (asyncio.get_running_loop().run_in_executor(executor, partial(get_correlation_from_data, data)))
 
     collection = mongo_client.get_default_database()[config.MONGODB_CORRELATIONS_COLLECTION]
     document = await collection.find_one({'user_id': user_id, 'data_types': {'$all': [x_data_type, y_data_type]}})
@@ -96,7 +108,7 @@ async def calculation_task(app: FastAPI, payload: CalculationPayload):
         3. Save correlation into MongoDB
     """
     await save_metrics(app.mongo_client, payload)
-    await calculate_correlation(app.mongo_client, payload)
+    await calculate_correlation(app.mongo_client, payload, app.executor)
 
 
 @app.post('/calculate')
