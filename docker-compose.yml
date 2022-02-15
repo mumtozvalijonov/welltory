@@ -1,0 +1,16 @@
+version: "3.9"
+
+services:
+  web:
+    image: welltory
+    command: uvicorn main:app --env-file .env --host 0.0.0.0 --reload
+    volumes:
+      - ./:/app
+    ports:
+      - "18000:8000"
+      - "17000:7000"
+
+  mongo:
+    image: "mongo"
+    ports:
+      - "27018:27017"

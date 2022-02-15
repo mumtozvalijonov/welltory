@@ -1,8 +1,10 @@
 from fastapi import FastAPI, Query, Response, status, Body, Request
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
-from pymongo import UpdateOne
+from pymongo import UpdateOne, ASCENDING
 from datetime import datetime, time
+import pandas as pd
+from scipy.stats import pearsonr
 
 from serializers import CalculationPayload
 import config
@@ -20,13 +22,8 @@ async def on_shutdown():
     app.mongo_client.close()
 
 
-async def calculation_task(app: FastAPI, payload: CalculationPayload):
-    """
-        1. Save into MongoDB
-        2. Calculate correlation
-        3. Save correlation into MongoDB
-    """
-    collection = app.mongo_client.get_default_database()[config.MONGODB_METRICS_COLLECTION]
+async def save_metrics(mongo_client, payload: CalculationPayload):
+    collection = mongo_client.get_default_database()[config.MONGODB_METRICS_COLLECTION]
     operations = []
     for x, y in zip(payload.data.x, payload.data.y):
         x_doc, y_doc = x.dict(), y.dict()
@@ -54,6 +51,52 @@ async def calculation_task(app: FastAPI, payload: CalculationPayload):
             )
         ])
     await collection.bulk_write(operations)
+
+
+async def calculate_correlation(mongo_client, payload: CalculationPayload):
+    user_id = payload.user_id
+    x_data_type, y_data_type = payload.data.x_data_type, payload.data.y_data_type
+    result = mongo_client.get_default_database()[config.MONGODB_METRICS_COLLECTION]\
+        .aggregate([
+            {'$match': {'user_id': user_id, 'data_type': {'$in': [x_data_type, y_data_type]}}},
+            {'$project': {
+                'date': '$date',
+                'x': {'$cond': {'if': {'$eq': ['$data_type', x_data_type]}, 'then': '$value', 'else': None}}, 
+                'y': {'$cond': {'if': {'$eq': ['$data_type', y_data_type]}, 'then': '$value', 'else': None}}}},
+            {'$group': {'_id': '$date', 'x': {'$max': '$x'}, 'y': {'$max': '$y'}}},
+            {'$sort': {'_id': ASCENDING}}
+        ])
+    df = pd.DataFrame(await result.to_list(None))
+    df = df.fillna(df.mean())
+    corr, p_value = pearsonr(x=df.x, y=df.y)
+
+    collection = mongo_client.get_default_database()[config.MONGODB_CORRELATIONS_COLLECTION]
+    document = await collection.find_one({'user_id': user_id, 'data_types': {'$all': [x_data_type, y_data_type]}})
+    task = collection.update_one(
+        {'_id': document['_id']}, 
+        {
+            '$set': {
+                'correlation': corr,
+                'p_value': p_value
+            }
+        }
+    ) if document else collection.insert_one({
+                            'user_id': user_id,
+                            'data_types': [x_data_type, y_data_type],
+                            'correlation': corr,
+                            'p_value': p_value
+                        })
+    await task
+
+
+async def calculation_task(app: FastAPI, payload: CalculationPayload):
+    """
+        1. Save into MongoDB
+        2. Calculate correlation
+        3. Save correlation into MongoDB
+    """
+    await save_metrics(app.mongo_client, payload)
+    await calculate_correlation(app.mongo_client, payload)
 
 
 @app.post('/calculate')
