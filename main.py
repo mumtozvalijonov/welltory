@@ -11,7 +11,7 @@ import pandas as pd
 from datetime import datetime, time
 from scipy.stats import pearsonr
 
-from serializers import CalculationPayload, CorrelationData, DataType, RetrieveCorrelationFilter
+from serializers import CalculationPayload, CorrelationData, RetrieveCorrelationFilter
 import config
 
 
