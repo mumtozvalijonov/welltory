@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query, Response, status, Body, Request
+from fastapi import Depends, FastAPI, Query, Response, status, Body, Request
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import UpdateOne, ASCENDING
@@ -11,7 +11,7 @@ import pandas as pd
 from datetime import datetime, time
 from scipy.stats import pearsonr
 
-from serializers import CalculationPayload
+from serializers import CalculationPayload, CorrelationData, DataType, RetrieveCorrelationFilter
 import config
 
 
@@ -118,6 +118,18 @@ async def calculate(request: Request, payload: CalculationPayload = Body(...)):
     return Response(status_code=status.HTTP_201_CREATED)
 
 
-@app.get('/correlation')
-async def get_correlation(x_data_type: str = Query(...), y_data_type: str = Query(...), user_id: int = Query(...)):
-    return Response(status_code=status.HTTP_200_OK)
+@app.get('/correlation', response_model=CorrelationData)
+async def get_correlation(
+    request: Request,
+    data_filter: RetrieveCorrelationFilter = Depends(RetrieveCorrelationFilter)
+):
+    mongo_client = request.app.mongo_client
+    collection = mongo_client.get_default_database()[config.MONGODB_CORRELATIONS_COLLECTION]
+    document = await collection.find_one({
+        'user_id': data_filter.user_id,
+        'data_types': {'$all': [data_filter.x_data_type.value, data_filter.y_data_type.value]}
+    })
+    if document:
+        correlation_data = CorrelationData.from_mongo_object(document)
+        return correlation_data
+    return Response(status_code=status.HTTP_404_NOT_FOUND)

@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field, root_validator
+from fastapi import Query, HTTPException, status
+from pydantic import BaseModel, root_validator
 from datetime import date
 from typing import List
 from enum import Enum
@@ -36,3 +37,40 @@ class MetricsData(BaseModel):
 class CalculationPayload(BaseModel):
     user_id: int
     data: MetricsData
+
+
+class Correlation(BaseModel):
+    value: float
+    p_value: float
+
+
+class CorrelationData(BaseModel):
+    user_id: int
+    data_types: List[DataType]
+    correlation: Correlation
+    
+    @classmethod
+    def from_mongo_object(cls, obj):
+        return cls(
+            user_id=obj['user_id'],
+            data_types=obj['data_types'],
+            correlation=Correlation(
+                value=obj['correlation'],
+                p_value=obj['p_value']
+            )
+        )
+
+
+class RetrieveCorrelationFilter:
+
+    def __init__(
+        self,
+        x_data_type: DataType = Query(...),
+        y_data_type: DataType = Query(...),
+        user_id: int = Query(...)
+    ):
+        if x_data_type == y_data_type:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail='x_data_type must be different from y_data_type')
+        self.x_data_type = x_data_type
+        self.y_data_type = y_data_type
+        self.user_id = user_id
