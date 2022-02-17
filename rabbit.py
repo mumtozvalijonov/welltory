@@ -1,7 +1,5 @@
-import asyncio
 import aio_pika
 from aio_pika.pool import Pool
-import ujson
 
 import config
 
@@ -28,7 +26,7 @@ def get_channel_pool():
 
 async def publish(channel_pool, payload: str, queue_name):
     async with channel_pool.acquire() as channel:
-        await channel.declare_queue(queue_name, auto_delete=True)
+        await channel.declare_queue(queue_name, auto_delete=False)
         await channel.default_exchange.publish(
             aio_pika.Message(payload.encode()),
             queue_name

@@ -1,4 +1,13 @@
 import os
+from dotenv import load_dotenv
+from pathlib import Path
+
+
+BASE_DIR = Path(__file__).parent
+env_file = BASE_DIR/'.env'
+
+if env_file.exists():
+    load_dotenv(env_file)
 
 
 MONGODB_URI = os.environ['MONGODB_URI']
