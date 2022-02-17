@@ -11,6 +11,7 @@ import pandas as pd
 from datetime import datetime, time
 from scipy.stats import pearsonr
 
+from rabbit import get_channel_pool, publish
 from serializers import CalculationPayload, CorrelationData, RetrieveCorrelationFilter
 import config
 
@@ -22,6 +23,8 @@ app = FastAPI()
 async def on_startup():
     app.mongo_client = AsyncIOMotorClient(config.MONGODB_URI)
     app.executor = ThreadPoolExecutor(max_workers=5)
+    app.rmq_channel_pool = get_channel_pool()
+
 
 @app.on_event('shutdown')
 async def on_shutdown():
@@ -114,7 +117,12 @@ async def calculation_task(app: FastAPI, payload: CalculationPayload):
 @app.post('/calculate')
 async def calculate(request: Request, payload: CalculationPayload = Body(...)):
     app = request.app
-    asyncio.create_task(calculation_task(app, payload))
+    asyncio.create_task(publish(
+        channel_pool=app.rmq_channel_pool,
+        payload=payload.json(),
+        queue_name=config.RABBITMQ_CALCULATION_QUEUE_NAME)
+    )
+    # asyncio.create_task(calculation_task(app, payload))
     return Response(status_code=status.HTTP_201_CREATED)
 
 
