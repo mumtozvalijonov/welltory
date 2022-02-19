@@ -10,6 +10,12 @@ services:
       - "18000:8000"
       - "17000:7000"
 
+  calculator:
+    image: mumtozvalijonov/welltory_calculator
+    command: ["python", "calculator.py"]
+    env_file:
+      - .env
+
   mongo:
     image: "mongo"
     ports:
