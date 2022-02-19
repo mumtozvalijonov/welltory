@@ -1,7 +1,11 @@
 import pika
 import pymongo
+from pymongo import UpdateOne, ASCENDING
 import logging
 import sys
+from datetime import datetime, time
+import pandas as pd
+from scipy.stats import pearsonr
 
 import config
 from serializers import CalculationPayload
@@ -37,10 +41,81 @@ class Calculator:
     def _on_message(self, channel, method_frame, _, body):
         self.logger.info(f"New message: {body}")
         payload = CalculationPayload.parse_raw(body)
+
+        self._save_metrics(payload)
+        self._calculate_correlation(payload)        
+        
         channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+
+    def _save_metrics(self, payload: CalculationPayload):
+        collection = self.mongo_client.get_default_database()[config.MONGODB_METRICS_COLLECTION]
+        operations = []
+        for x, y in zip(payload.data.x, payload.data.y):
+            x_doc, y_doc = x.dict(), y.dict()
+            x_doc['date'], y_doc['date'] = datetime.combine(x.date, time(0, 0)), datetime.combine(y.date, time(0, 0))
+            x_doc['user_id'], y_doc['user_id'] = payload.user_id, payload.user_id
+            x_doc['data_type'], y_doc['data_type'] = str(payload.data.x_data_type), str(payload.data.y_data_type)
+            operations.extend([
+                UpdateOne(
+                    {
+                        'user_id': x_doc['user_id'],
+                        'data_type': x_doc['data_type'],
+                        'date': x_doc['date']
+                    },
+                    {'$set': x_doc},
+                    upsert=True
+                ),
+                UpdateOne(
+                    {
+                        'user_id': y_doc['user_id'],
+                        'data_type': y_doc['data_type'],
+                        'date': y_doc['date']
+                    },
+                    {'$set': y_doc},
+                    upsert=True
+                )
+            ])
+        collection.bulk_write(operations)
+
+    def _calculate_correlation(self, payload: CalculationPayload):
+        user_id = payload.user_id
+        x_data_type, y_data_type = payload.data.x_data_type, payload.data.y_data_type
+        result = self.mongo_client.get_default_database()[config.MONGODB_METRICS_COLLECTION]\
+            .aggregate([
+                {'$match': {'user_id': user_id, 'data_type': {'$in': [x_data_type, y_data_type]}}},
+                {'$project': {
+                    'date': '$date',
+                    'x': {'$cond': {'if': {'$eq': ['$data_type', x_data_type]}, 'then': '$value', 'else': None}}, 
+                    'y': {'$cond': {'if': {'$eq': ['$data_type', y_data_type]}, 'then': '$value', 'else': None}}}},
+                {'$group': {'_id': '$date', 'x': {'$max': '$x'}, 'y': {'$max': '$y'}}},
+                {'$sort': {'_id': ASCENDING}}
+            ])
+        data = list(result)
+        df = pd.DataFrame(data).set_index('_id')
+        df = df.resample('1d').mean()
+        df = df.fillna(df.mean())
+        corr, p_value = pearsonr(x=df.x, y=df.y)
+
+        collection = self.mongo_client.get_default_database()[config.MONGODB_CORRELATIONS_COLLECTION]
+        document = collection.find_one({'user_id': user_id, 'data_types': {'$all': [x_data_type, y_data_type]}})
+        collection.update_one(
+            {'_id': document['_id']}, 
+            {
+                '$set': {
+                    'correlation': corr,
+                    'p_value': p_value
+                }
+            }
+        ) if document else collection.insert_one({
+                                'user_id': user_id,
+                                'data_types': [x_data_type, y_data_type],
+                                'correlation': corr,
+                                'p_value': p_value
+                            })
 
     def run(self):
         channel = self.rmq_connection.channel()
+        channel.queue_declare(config.RABBITMQ_CALCULATION_QUEUE_NAME, auto_delete=False)
         channel.basic_consume(config.RABBITMQ_CALCULATION_QUEUE_NAME, self._on_message)
         try:
             channel.start_consuming()
