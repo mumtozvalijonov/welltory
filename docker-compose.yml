@@ -2,8 +2,10 @@ version: "3.9"
 
 services:
   web:
-    image: welltory
-    command: uvicorn main:app --env-file .env --host 0.0.0.0 --reload
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+      target: web
     volumes:
       - ./:/app
     ports:
@@ -11,7 +13,10 @@ services:
       - "17000:7000"
 
   calculator:
-    image: mumtozvalijonov/welltory_calculator
+    build:
+      context: .
+      dockerfile: ./docker/Dockerfile
+      target: calculator
     command: ["python", "calculator.py"]
     env_file:
       - .env
