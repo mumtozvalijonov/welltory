@@ -39,13 +39,16 @@ class Calculator:
             handler.close()
 
     def _on_message(self, channel, method_frame, _, body):
-        self.logger.info(f"New message: {body}")
-        payload = CalculationPayload.parse_raw(body)
+        try:
+            self.logger.info(f"New message: {body}")
+            payload = CalculationPayload.parse_raw(body)
 
-        self._save_metrics(payload)
-        self._calculate_correlation(payload)        
-        
-        channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+            self._save_metrics(payload)
+            self._calculate_correlation(payload)        
+            
+            channel.basic_ack(delivery_tag=method_frame.delivery_tag)
+        except Exception as e:
+            self.logger.error(e)
 
     def _save_metrics(self, payload: CalculationPayload):
         collection = self.mongo_client.get_default_database()[config.MONGODB_METRICS_COLLECTION]
